@@ -1872,7 +1872,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        
+
+        # Cron disables memory persistence; surface that in the result so a
+        # successful-looking run doesn't hide that nothing was saved (#38647).
+        _mem_notice = getattr(agent, "_memory_disabled_notice", None)
+        _notes_section = f"\n## Notes\n\n{_mem_notice}\n" if _mem_notice else ""
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -1886,8 +1891,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 ## Response
 
 {logged_response}
-"""
-        
+{_notes_section}"""
+
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
         

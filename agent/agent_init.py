@@ -151,6 +151,37 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _cron_memory_disabled_notice(
+    skip_memory: bool,
+    platform: Optional[str],
+    mem_config: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Return a user-facing notice when a cron run silently disables configured memory.
+
+    Cron forces ``skip_memory=True`` so a scheduled job's system prompt can't
+    corrupt the user profile (USER.md) — but that also blocks every MEMORY.md /
+    USER.md write. The loss is invisible: the job still exits 0, so a user who
+    has memory configured never learns nothing was persisted (#38647). Returns
+    a notice only for that surprising case; ``None`` for every other
+    ``skip_memory`` caller (subagents, batch, curator), which don't set
+    ``platform="cron"`` and aren't a surprise.
+    """
+    if not (skip_memory and platform == "cron"):
+        return None
+    cfg = mem_config or {}
+    configured = bool(
+        cfg.get("memory_enabled")
+        or cfg.get("user_profile_enabled")
+        or str(cfg.get("provider") or "").strip()
+    )
+    if not configured:
+        return None
+    return (
+        "Memory persistence is disabled for scheduled cron runs, so "
+        "MEMORY.md / USER.md were not updated this run (issue #38647)."
+    )
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1110,6 +1141,7 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
+    agent._memory_disabled_notice = None
     if not skip_memory:
         try:
             mem_config = _agent_cfg.get("memory", {})
@@ -1192,6 +1224,15 @@ def init_agent(
         except Exception as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
+
+    # Surface the silent cron memory-disable (#38647): a scheduled job with
+    # memory configured persists nothing, yet exits 0. Record it so the cron
+    # output can show it, and log it for operators watching the logs.
+    agent._memory_disabled_notice = _cron_memory_disabled_notice(
+        skip_memory, platform, _agent_cfg.get("memory", {})
+    )
+    if agent._memory_disabled_notice:
+        _ra().logger.warning("Cron run: %s", agent._memory_disabled_notice)
 
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
     _inject_memory_provider_tools(agent)
